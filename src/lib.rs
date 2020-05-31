@@ -4,7 +4,7 @@
 //!
 //! As of now the supported types are:
 //!
-//! * `arrayfire::Array` (non-complex internal type)
+//! * `arrayfire::Array<T>` (non-complex internal type)
 //! * `arrayfire::Dim4`
 //! * `arrayfire::DType`
 //!
@@ -23,7 +23,7 @@
 //! #[derive(Serialize, Deserialize)]
 //! struct MyStruct {
 //!     #[serde(with = "arrayfire_serde")]
-//!     tensor: arrayfire::Array,
+//!     tensor: arrayfire::Array<T>,
 //!     #[serde(with = "arrayfire_serde")]
 //!     sliding_window: arrayfire::Dim4,
 //! }
@@ -37,6 +37,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use std::fmt;
+use std::marker::PhantomData;
 
 /// Exposed serialization function used by the `serde` attributes:
 ///
@@ -53,7 +54,7 @@ use std::fmt;
 /// #[derive(Serialize)]
 /// struct MyStruct {
 ///     #[serde(serialize_with = "arrayfire_serde::serialize")]
-///     tensor: arrayfire::Array,
+///     tensor: arrayfire::Array<T>,
 /// }
 /// # fn main() {}
 /// ```
@@ -80,7 +81,7 @@ where
 /// #[derive(Deserialize)]
 /// struct MyStruct {
 ///     #[serde(deserialize_with = "arrayfire_serde::deserialize")]
-///     tensor: arrayfire::Array,
+///     tensor: arrayfire::Array<T>,
 /// }
 /// # fn main() {}
 /// ```
@@ -234,12 +235,12 @@ impl<'de> Deserialize<'de> for De<DType> {
     }
 }
 
-impl<'a> Serialize for Ser<'a, Array> {
+impl<'a, T: HasAfEnum + Serialize> Serialize for Ser<'a, Array<T>> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let array: &Array = self.0;
+        let array: &Array<T> = self.0;
         let dim = array.dims();
         let dtype: DType = array.get_type();
 
@@ -247,7 +248,7 @@ impl<'a> Serialize for Ser<'a, Array> {
         tup.serialize_element(&Ser::new(&dtype))?;
         tup.serialize_element(&Ser::new(&dim))?;
 
-        fn get_data<T: HasAfEnum>(array: &Array) -> Vec<T> {
+        fn get_data<T: HasAfEnum>(array: &Array<T>) -> Vec<T> {
             let mut data: Vec<T> = Vec::with_capacity(array.elements());
             unsafe {
                 data.set_len(array.elements());
@@ -256,32 +257,27 @@ impl<'a> Serialize for Ser<'a, Array> {
             data
         }
 
-        match dtype {
-            DType::F32 => tup.serialize_element(&get_data::<f32>(array))?,
-            DType::F64 => tup.serialize_element(&get_data::<f64>(array))?,
-            DType::S16 => tup.serialize_element(&get_data::<i16>(array))?,
-            DType::S32 => tup.serialize_element(&get_data::<i32>(array))?,
-            DType::S64 => tup.serialize_element(&get_data::<i64>(array))?,
-            DType::U16 => tup.serialize_element(&get_data::<u16>(array))?,
-            DType::U32 => tup.serialize_element(&get_data::<u32>(array))?,
-            DType::U64 => tup.serialize_element(&get_data::<u64>(array))?,
-            DType::B8 => tup.serialize_element(&get_data::<bool>(array))?,
-            _ => panic!("unimplemented serialization for complex types!"),
-        }
+        tup.serialize_element(&get_data::<T>(array))?;
+        
 
         tup.end()
     }
 }
 
-impl<'de> Deserialize<'de> for De<Array> {
+impl<'de, T: HasAfEnum + Deserialize<'de>> Deserialize<'de> for De<Array<T>> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct ArrayVisitor;
+        struct ArrayVisitor<T: HasAfEnum>(PhantomData<fn() -> Array<T>>);
+        impl<T: HasAfEnum> ArrayVisitor<T> {
+            fn new() -> Self {
+                ArrayVisitor ( PhantomData )
+            }
+        }
 
-        impl<'de> Visitor<'de> for ArrayVisitor {
-            type Value = De<Array>;
+        impl<'de, T: HasAfEnum + Deserialize<'de>> Visitor<'de> for ArrayVisitor<T> {
+            type Value = De<Array<T>>;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 write!(formatter, "struct ArrayStruct")
@@ -291,28 +287,16 @@ impl<'de> Deserialize<'de> for De<Array> {
             where
                 V: SeqAccess<'de>,
             {
-                let dtype: De<DType> = seq.next_element()?.expect("has element");
+                let _dtype: De<DType> = seq.next_element()?.expect("has element");
                 let dim: De<Dim4> = seq.next_element()?.expect("has element");
 
-                fn get_array<T: HasAfEnum>(data: Option<Vec<T>>, dim: &Dim4) -> Array {
+                fn get_array<T: HasAfEnum>(data: Option<Vec<T>>, dim: &Dim4) -> Array<T> {
                     let data: Vec<T> = data.expect("has vector of elements");
-                    Array::new::<T>(data.as_slice(), *dim)
+                    Array::new(data.as_slice(), *dim)
                 }
-
-                match dtype.0 {
-                    DType::F32 => Ok(De(get_array::<f32>(seq.next_element()?, &dim.0))),
-                    DType::F64 => Ok(De(get_array::<f64>(seq.next_element()?, &dim.0))),
-                    DType::S16 => Ok(De(get_array::<i16>(seq.next_element()?, &dim.0))),
-                    DType::S32 => Ok(De(get_array::<i32>(seq.next_element()?, &dim.0))),
-                    DType::S64 => Ok(De(get_array::<i64>(seq.next_element()?, &dim.0))),
-                    DType::U16 => Ok(De(get_array::<u16>(seq.next_element()?, &dim.0))),
-                    DType::U32 => Ok(De(get_array::<u32>(seq.next_element()?, &dim.0))),
-                    DType::U64 => Ok(De(get_array::<u64>(seq.next_element()?, &dim.0))),
-                    DType::B8 => Ok(De(get_array::<bool>(seq.next_element()?, &dim.0))),
-                    _ => panic!("unimplemented deserialization for complex types!"),
-                }
+                Ok(De(get_array::<T>(seq.next_element()?, &dim.0)))
             }
         }
-        deserializer.deserialize_tuple(3, ArrayVisitor)
+        deserializer.deserialize_tuple(3, ArrayVisitor::new())
     }
 }

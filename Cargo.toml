@@ -10,7 +10,7 @@ keywords = ["serde", "arrayfire"]
 license = "MIT"
 
 [dependencies]
-arrayfire = "3.5.0"
-serde_derive = "1.0.18"
-serde = "1.0.18"
-serde_test = "1.0.18"
+arrayfire = "3.7.0"
+serde_derive = "1.0.111"
+serde = "1.0.111"
+serde_test = "1.0.111"
